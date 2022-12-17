@@ -6,6 +6,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "pico/stdlib.h"
 #include "hardware/gpio.h"
 #include "hardware/uart.h"
@@ -17,12 +18,17 @@
 #define UART_ID uart0
 #define TX_PIN 28
 #define RX_PIN 29
+#define BUFFER_SIZE 64
+
+static uint8_t uart_buffer[BUFFER_SIZE];
+static uint8_t uart_pos;
+static critical_section_t crit_sec;
 
 // RX interrupt handler
 void on_uart_rx() {
     while (uart_is_readable(UART_ID)) {
-        char rx_data = uart_getc(UART_ID);
-		printf("%c", rx_data);
+	uart_buffer[uart_pos] = uart_getc(UART_ID);
+	uart_pos++;
     }
 }
 
@@ -38,9 +44,9 @@ void core1_entry() {
 	{
             // Set all our GPIOs in one go!
             // If something else is using GPIO, we might want to use gpio_put_masked()
-            gpio_set_mask(0xfe0ffff);
+            gpio_set_mask(0xef0ffff);
             sleep_ms(500);
-            gpio_clr_mask(0xfe0ffff);
+            gpio_clr_mask(0xef0ffff);
             sleep_ms(500);
 	}
     }
@@ -50,6 +56,17 @@ void core1_entry() {
 int main() {
     int stdin_char;
     char tx_data = 'A';
+    uint8_t buffer_l[BUFFER_SIZE] = {0xFF};
+    uint8_t count_l = 0;
+    uint8_t i = 0;
+
+    uart_pos = 0;
+
+    /*
+    ** Initialise a critical_section structure allowing
+    ** the system to assign a spin lock.
+    */
+    critical_section_init (&crit_sec);
 
     /* STD initializations */
     stdio_init_all();
@@ -103,6 +120,21 @@ int main() {
     multicore_launch_core1(core1_entry);
 
     while (true) {
+ 	/*
+	** Process the data received from UART RX
+	*/
+	critical_section_enter_blocking (&crit_sec);
+	memcpy(buffer_l, uart_buffer, uart_pos);
+	count_l = uart_pos;
+	uart_pos = 0;
+	critical_section_exit (&crit_sec);
+	for(i = 0; i < count_l; i++)
+	{
+	    printf("%c", buffer_l[i]);
+	}
+	/*
+	** Process the data received from USB
+	*/
 	stdin_char = getchar_timeout_us(0);
         if(stdin_char != PICO_ERROR_TIMEOUT)
         {
